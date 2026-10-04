@@ -141,20 +141,20 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
   }
 
   async activateVoice() {
+    // Do not wait for the active Voice UI inside this WindowActor query.
+    // ChatGPT rehydrates/navigates the Voice surface after the click, which
+    // can destroy or replace this actor before the query resolves. The parent
+    // bridge performs the active-state polling against the freshly attached
+    // actor instead.
     for (let attempt = 0; attempt < 70; attempt++) {
       const state = this.state();
       if (state.active) return { ok: true, result: "already-active", ...this.publicState(state) };
       if (state.startControl) {
         if (!this.trustedClick(state.startControl))
           return { ok: false, result: "voice-click-failed", ...this.publicState(state) };
-        const after = await this.waitForActive();
-        return {
-          ok: after.active,
-          result: after.active ? "active" : "voice-did-not-start",
-          ...this.publicState(after),
-        };
+        return { ok: true, result: "starting", ...this.publicState(state) };
       }
-      await new Promise(resolve => this.contentWindow.setTimeout(resolve, 180));
+      await new Promise(resolve => this.contentWindow.setTimeout(resolve, 120));
     }
     const state = this.state();
     return { ok: false, result: state.loggedOut ? "needs-login" : "voice-button-not-found", ...this.publicState(state) };
@@ -204,6 +204,31 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       composer.dispatchEvent(new this.contentWindow.Event("input", { bubbles: true }));
     }
     composer.dispatchEvent(new this.contentWindow.Event("change", { bubbles: true }));
+  }
+
+  async clearComposer() {
+    const composer = await this.waitForComposer();
+    if (!composer) return { ok: false, result: "composer-not-found", ...this.publicState() };
+    this.setComposerText(composer, "");
+    // Some contenteditable implementations retain a lone <br>/newline after
+    // clearing. Dispatch Backspace once through the trusted page window and
+    // then normalize the DOM again so ChatGPT sees a truly empty prompt.
+    try {
+      composer.focus?.({ preventScroll: true });
+      const utils = this.contentWindow.windowUtils;
+      utils.sendKeyEvent("keydown", 8, 0, 0);
+      utils.sendKeyEvent("keyup", 8, 0, 0);
+    } catch (_) {}
+    if (!(composer instanceof this.contentWindow.HTMLTextAreaElement) && !(composer instanceof this.contentWindow.HTMLInputElement)) {
+      composer.textContent = "";
+      composer.innerHTML = "";
+      composer.dispatchEvent(new this.contentWindow.Event("input", { bubbles: true }));
+    }
+    await new Promise(resolve => this.contentWindow.setTimeout(resolve, 220));
+    let length = 0;
+    if ("value" in composer) length = String(composer.value || "").length;
+    else length = String(composer.innerText || composer.textContent || "").trim().length;
+    return { ok: length === 0, result: length === 0 ? "composer-cleared" : "composer-not-empty", composerTextLength: length, ...this.publicState() };
   }
 
   async sendText(text) {
@@ -339,6 +364,13 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
 
   debugComposer() {
     const doc = this.document;
+    const composer = this.findComposer();
+    let composerTextLength = 0;
+    if (composer) {
+      if ("value" in composer) composerTextLength = String(composer.value || "").length;
+      else composerTextLength = String(composer.innerText || composer.textContent || "").length;
+    }
+    const send = this.findSendButton();
     const buttons = Array.from(doc?.querySelectorAll?.('button,[role="button"],input') || [])
       .filter(el => this.visible(el) || el.tagName === "INPUT")
       .map(el => ({
@@ -348,9 +380,18 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
         accept: el.getAttribute?.("accept") || "",
         testid: el.getAttribute?.("data-testid") || "",
       }))
-      .filter(x => /attach|file|photo|image|upload|add|plus|paperclip|clip/.test(JSON.stringify(x).toLowerCase()) || x.type === "file")
+      .filter(x => /attach|file|photo|image|upload|add|plus|paperclip|clip|voice|dictat|send/.test(JSON.stringify(x).toLowerCase()) || x.type === "file")
       .slice(0, 80);
-    return { ok: true, result: "debug", buttons, ...this.publicState() };
+    return {
+      ok: true,
+      result: "debug",
+      composerTextLength,
+      composerEmpty: composerTextLength === 0,
+      sendPresent: Boolean(send),
+      sendDisabled: send ? Boolean(send.disabled || send.getAttribute?.("aria-disabled") === "true") : null,
+      buttons,
+      ...this.publicState(),
+    };
   }
 
   async receiveMessage(message) {
@@ -358,6 +399,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       case "activateVoice": return this.activateVoice();
       case "endVoice": return this.endVoice();
       case "newChat": return this.newChat();
+      case "clearComposer": return this.clearComposer();
       case "sendText": return this.sendText(message.data?.text ?? "");
       case "pasteImage": return this.pasteImage(message.data || {});
       case "debugComposer": return this.debugComposer();

@@ -22,3 +22,8 @@ opened.
 
 Run scripts/deploy-local.sh to install into the active Zen profile. Restart Zen
 or toggle the mod in Sine to load the new userChrome script.
+
+
+## v0.5 runtime
+
+The bridge hosts ChatGPT in a minimal standalone Gecko chrome window containing exactly one `<browser>` element. It shares the signed-in Zen/Firefox profile and WebRTC stack, but has no Zen tabs, sidebar, toolbar, or browser chrome. Debug mode only moves that window between `special:tabby` and the active workspace.

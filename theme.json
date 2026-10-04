@@ -1,7 +1,7 @@
 {
   "id": "qwqc-hey-tabby-bridge",
   "name": "QWQC Hey Tabby Voice Bridge",
-  "description": "Hidden dedicated Zen/Firefox ChatGPT engine for the standalone Tabby Caelestia plugin.",
+  "description": "Minimal dedicated Gecko WebView window for the Tabby Caelestia companion.",
   "homepage": "https://github.com/dcqwqc/zen-hey-tabby-bridge",
   "scripts": {
     "hey-tabby.uc.js": {
@@ -12,7 +12,7 @@
     }
   },
   "author": "qwqc",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "tags": [
     "Zen",
     "ChatGPT",

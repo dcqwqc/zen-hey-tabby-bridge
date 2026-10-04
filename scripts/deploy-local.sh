@@ -39,6 +39,7 @@ fi
 
 SINE_ROOT="$PROFILE/chrome/sine-mods"
 ACTOR_ROOT="$PROFILE/chrome/JS/actors"
+ENGINE_ROOT="$PROFILE/chrome/JS"
 if [[ ! -d "$PROFILE/chrome/JS" ]]; then
   echo "Sine does not appear to be installed in: $PROFILE" >&2
   exit 1
@@ -50,6 +51,7 @@ cp "$ROOT/theme.json" "$DEST/theme.json"
 cp "$ROOT/README.md" "$DEST/README.md"
 cp "$ROOT/hey-tabby.uc.js" "$DEST/hey-tabby.uc.js"
 cp "$ROOT/actors/QwqcHeyTabbyChild.sys.mjs" "$ACTOR_ROOT/QwqcHeyTabbyChild.sys.mjs"
+cp "$ROOT/engine/tabby-engine.xhtml" "$ENGINE_ROOT/tabby-engine.xhtml"
 
 python3 - "$SINE_ROOT/mods.json" "$DEST/theme.json" <<'PY'
 import json
@@ -70,4 +72,5 @@ PY
 
 echo "Deployed $MOD_ID to $DEST"
 echo "Actor: $ACTOR_ROOT/QwqcHeyTabbyChild.sys.mjs"
+echo "Engine: $ENGINE_ROOT/tabby-engine.xhtml"
 echo "Restart Zen or toggle the mod in Sine to load it."
