@@ -9,7 +9,7 @@
 
   const INSTANCE_KEY = "__qwqcHeyTabbyBridge";
   const ACTOR_NAME = "QwqcHeyTabby";
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   const TABBY_URL = "https://chatgpt.com/?tabby=1";
   const COMMAND_PATH = PathUtils.join(PathUtils.profileDir, "tabby-bridge-command.json");
   const STATE_PATH = PathUtils.join(PathUtils.profileDir, "tabby-bridge-state.json");
@@ -210,6 +210,8 @@
         result = await query("sendText", { text: String(command.text || "") });
       } else if (name === "debug-dom") {
         result = await query("debugComposer");
+      } else if (name === "debug-all") {
+        result = await query("debugAllControls");
       } else if (name === "paste-image") {
         result = await query("pasteImage", {
           base64: String(command.base64 || ""),
@@ -218,6 +220,13 @@
         });
       } else if (name === "end") {
         result = await query("endVoice");
+        // Reset the dedicated engine tab to its canonical marker URL so Zen
+        // session restore can always identify it, even after Voice temporarily
+        // changed the route to /c/local-chatgpt:... .
+        try {
+          const { actor } = await ensureTabbyTab();
+          if (actor) await actor.sendQuery("newChat", {});
+        } catch (_) {}
         if (!command.debug) hideTab(tab);
       } else {
         result = await query("voiceStatus");

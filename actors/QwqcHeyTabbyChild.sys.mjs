@@ -77,9 +77,13 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
 
     const busyElement = this.document?.querySelector?.('[data-testid*="stop-button"], .result-streaming');
     const workingButton = entries.find(({ label }) =>
-      /(stop generating|stop response|cancel response|interrupt|thinking|working|searching)/.test(label)
+      /(stop generating|stop response|cancel response|interrupt response|searching the web|working on your request)/.test(label)
     );
-    const working = Boolean((busyElement && this.visible(busyElement)) || workingButton);
+    // Voice mode itself contains persistent controls such as the model's
+    // "Thinking effort" selector. Those are metadata, not evidence that the
+    // assistant is currently thinking. While Voice is active the standalone
+    // Tabby backend derives speaking/listening from real output amplitude.
+    const working = !active && Boolean((busyElement && this.visible(busyElement)) || workingButton);
 
     return {
       active,
@@ -137,7 +141,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
   }
 
   async activateVoice() {
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 70; attempt++) {
       const state = this.state();
       if (state.active) return { ok: true, result: "already-active", ...this.publicState(state) };
       if (state.startControl) {
@@ -217,17 +221,9 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
 
   async newChat() {
     try {
-      const button = this.candidates().find(({ label, element }) => {
-        const href = element.getAttribute?.("href") || "";
-        return /^(new chat|start new chat|new conversation)$/.test(label) ||
-          (/new chat/.test(label) && !/project/.test(label)) || href === "/";
-      });
-      if (button?.element) {
-        this.trustedClick(button.element);
-      } else {
-        this.contentWindow.location.assign("https://chatgpt.com/?tabby=1");
-      }
-      await new Promise(resolve => this.contentWindow.setTimeout(resolve, 300));
+      // Always hard-navigate Tabby's dedicated tab to the canonical fresh
+      // composer. This never touches the user's normal selected ChatGPT tab.
+      this.contentWindow.location.assign("https://chatgpt.com/?tabby=1");
       return { ok: true, result: "navigating" };
     } catch (error) {
       return { ok: false, result: "new-chat-navigation-failed", error: String(error) };
@@ -325,6 +321,22 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     }
   }
 
+  debugAllControls() {
+    const doc = this.document;
+    const rows = Array.from(doc?.querySelectorAll?.('button,[role="button"],input,textarea,[contenteditable="true"]') || [])
+      .filter(el => this.visible(el) || el.tagName === "INPUT")
+      .slice(0, 180)
+      .map(el => ({
+        tag: el.tagName,
+        type: el.getAttribute?.("type") || "",
+        label: QwqcHeyTabbyChild.labelFor(el).slice(0, 180),
+        testid: el.getAttribute?.("data-testid") || "",
+        aria: el.getAttribute?.("aria-label") || "",
+        title: el.getAttribute?.("title") || "",
+      }));
+    return { ok:true, result:"debug-all", count:rows.length, rows, ...this.publicState() };
+  }
+
   debugComposer() {
     const doc = this.document;
     const buttons = Array.from(doc?.querySelectorAll?.('button,[role="button"],input') || [])
@@ -349,6 +361,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       case "sendText": return this.sendText(message.data?.text ?? "");
       case "pasteImage": return this.pasteImage(message.data || {});
       case "debugComposer": return this.debugComposer();
+      case "debugAllControls": return this.debugAllControls();
       case "voiceStatus": return { ok: true, result: "status", ...this.publicState() };
       default: return { ok: false, result: "unknown-message" };
     }
