@@ -394,7 +394,10 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       }
     }
 
-    text = text.replace(/\n(?:Copy|Share|Read aloud|Regenerate response|React|Bad response|More actions)(?:\n.*)*$/i, "").trim();
+    text = text
+      .replace(/\n(?:Copy|Share|Read aloud|Regenerate response|React|Bad response|More actions)(?:\n.*)*$/i, "")
+      .replace(/\n*Is this conversation helpful so far\?.*$/i, "")
+      .trim();
     return {
       ok: true,
       result: text ? "latest-assistant-response" : "no-assistant-message",
