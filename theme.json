@@ -1,7 +1,7 @@
 {
   "id": "qwqc-hey-tabby-bridge",
   "name": "QWQC Hey Tabby Voice Bridge",
-  "description": "Thin Zen bridge that focuses the dedicated ChatGPT companion tab and activates ChatGPT Voice.",
+  "description": "Hidden dedicated Zen/Firefox ChatGPT Voice engine for Protocol7 Hey Tabby.",
   "homepage": "https://github.com/dcqwqc/zen-hey-tabby-bridge",
   "scripts": {
     "hey-tabby.uc.js": {
@@ -12,10 +12,17 @@
     }
   },
   "author": "qwqc",
-  "version": "0.1.0",
-  "tags": ["Zen", "ChatGPT", "Voice", "Companion"],
+  "version": "0.2.0",
+  "tags": [
+    "Zen",
+    "ChatGPT",
+    "Voice",
+    "Companion"
+  ],
   "createdAt": "2026-10-04",
   "updatedAt": "2026-10-04",
-  "fork": ["zen"],
+  "fork": [
+    "zen"
+  ],
   "supportsUnload": true
 }
