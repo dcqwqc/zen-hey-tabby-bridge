@@ -353,6 +353,58 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     }
   }
 
+  latestAssistantResponse() {
+    const doc = this.document;
+    if (!doc) return { ok: false, result: "document-unavailable", assistantCount: 0, assistantText: "" };
+
+    const semantic = Array.from(doc.querySelectorAll('[data-message-author-role="assistant"]'));
+    let text = "";
+    let messageId = "";
+    let assistantCount = semantic.length;
+
+    if (semantic.length) {
+      const latest = semantic[semantic.length - 1];
+      const content = latest.querySelector(
+        '.markdown, [class*="markdown"], [data-message-content], [class*="prose"]'
+      ) || latest;
+      text = String(content.innerText || content.textContent || "").trim();
+      const host = latest.closest?.('[data-message-id]') || latest;
+      messageId = String(host?.getAttribute?.('data-message-id') || "");
+    } else {
+      // The current ChatGPT renderer virtualizes turns without message-role
+      // attributes. Assistant action controls remain stable, so anchor on the
+      // last response's Read aloud / Regenerate controls and walk to its turn.
+      const controls = Array.from(doc.querySelectorAll('button,[role="button"]')).filter(el => this.visible(el));
+      const responseAnchors = controls.filter(el => {
+        const label = QwqcHeyTabbyChild.labelFor(el);
+        return /^(read aloud|regenerate response)$/.test(label);
+      });
+      assistantCount = responseAnchors.filter(el => QwqcHeyTabbyChild.labelFor(el) === 'read aloud').length;
+      const anchor = responseAnchors[responseAnchors.length - 1] || null;
+      let turn = anchor;
+      for (let i = 0; turn && i < 10; i++, turn = turn.parentElement) {
+        const raw = String(turn.innerText || turn.textContent || "").trim();
+        const marker = raw.lastIndexOf("ChatGPT said:");
+        if (marker >= 0) {
+          text = raw.slice(marker + "ChatGPT said:".length).trim();
+          const nextUser = text.indexOf("\nYou said:");
+          if (nextUser >= 0) text = text.slice(0, nextUser).trim();
+          break;
+        }
+      }
+    }
+
+    text = text.replace(/\n(?:Copy|Share|Read aloud|Regenerate response|React|Bad response|More actions)(?:\n.*)*$/i, "").trim();
+    return {
+      ok: true,
+      result: text ? "latest-assistant-response" : "no-assistant-message",
+      assistantCount,
+      assistantText: text.slice(0, 12000),
+      assistantMessageId: messageId,
+      ...this.publicState(),
+    };
+  }
+
   debugAllControls() {
     const doc = this.document;
     const rows = Array.from(doc?.querySelectorAll?.('button,[role="button"],input,textarea,[contenteditable="true"]') || [])
@@ -409,6 +461,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       case "clearComposer": return this.clearComposer();
       case "sendText": return this.sendText(message.data?.text ?? "");
       case "pasteImage": return this.pasteImage(message.data || {});
+      case "latestAssistantResponse": return this.latestAssistantResponse();
       case "debugComposer": return this.debugComposer();
       case "debugAllControls": return this.debugAllControls();
       case "voiceStatus": return { ok: true, result: "status", ...this.publicState() };

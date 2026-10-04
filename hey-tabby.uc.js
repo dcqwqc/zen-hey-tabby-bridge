@@ -8,7 +8,7 @@
   "use strict";
 
     const ACTOR_NAME = "QwqcHeyTabby";
-  const VERSION = "0.6.0";
+  const VERSION = "0.7.0";
   const TABBY_URL = "https://chatgpt.com/?tabby=1";
   const ENGINE_CHROME_URL = "chrome://userscripts/content/tabby-engine.xhtml";
   const COMMAND_PATH = PathUtils.join(PathUtils.profileDir, "tabby-bridge-command.json");
@@ -352,6 +352,8 @@
         result = await query("activateVoice");
       } else if (name === "send-text") {
         result = await query("sendText", { text: String(command.text || "") });
+      } else if (name === "latest-response") {
+        result = await query("latestAssistantResponse", {}, 1200);
       } else if (name === "paste-image") {
         result = await query("pasteImage", {
           base64: String(command.base64 || ""),

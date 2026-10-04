@@ -32,3 +32,8 @@ The bridge hosts ChatGPT in a minimal standalone Gecko chrome window containing 
 ### Conversation lifecycle
 
 Bridge v0.6 adds separate `continue-chat` and `new-chat` operations. `end` stops Voice without navigating away from the active conversation, allowing Tabby to resume the same `/c/...` thread after closing or backend/shell restarts. Fresh-chat navigation uses the parent Gecko `<browser>` and a real `nsIURI`, avoiding WindowActor destruction races. Text sending waits for ChatGPT's hydrated, enabled Send control before clicking.
+
+
+### Assistant text extraction (v0.7)
+
+The bridge exposes `latest-response`, which reads the latest assistant answer from the same hidden ChatGPT conversation. It supports both semantic message-role markup and ChatGPT's newer virtualized turn renderer by anchoring on stable assistant action controls. This powers Tabby's `always / text-only / never` reply display modes without issuing a second model request.
