@@ -27,3 +27,8 @@ or toggle the mod in Sine to load the new userChrome script.
 ## v0.5 runtime
 
 The bridge hosts ChatGPT in a minimal standalone Gecko chrome window containing exactly one `<browser>` element. It shares the signed-in Zen/Firefox profile and WebRTC stack, but has no Zen tabs, sidebar, toolbar, or browser chrome. Debug mode only moves that window between `special:tabby` and the active workspace.
+
+
+### Conversation lifecycle
+
+Bridge v0.6 adds separate `continue-chat` and `new-chat` operations. `end` stops Voice without navigating away from the active conversation, allowing Tabby to resume the same `/c/...` thread after closing or backend/shell restarts. Fresh-chat navigation uses the parent Gecko `<browser>` and a real `nsIURI`, avoiding WindowActor destruction races. Text sending waits for ChatGPT's hydrated, enabled Send control before clicking.

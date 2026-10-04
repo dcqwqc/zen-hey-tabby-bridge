@@ -8,7 +8,7 @@
   "use strict";
 
     const ACTOR_NAME = "QwqcHeyTabby";
-  const VERSION = "0.5.0";
+  const VERSION = "0.6.0";
   const TABBY_URL = "https://chatgpt.com/?tabby=1";
   const ENGINE_CHROME_URL = "chrome://userscripts/content/tabby-engine.xhtml";
   const COMMAND_PATH = PathUtils.join(PathUtils.profileDir, "tabby-bridge-command.json");
@@ -131,7 +131,7 @@
 
       const browser = win.document.getElementById("tabby-browser");
       try {
-        browser.loadURI(TABBY_URL, {
+        browser.loadURI(Services.io.newURI(TABBY_URL), {
           triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
         });
       } catch (error) {
@@ -156,7 +156,7 @@
       try { current = browser.currentURI?.spec || ""; } catch (_) {}
       if (!current.startsWith("https://chatgpt.com/") && current !== "about:blank") {
         try {
-          browser.loadURI(TABBY_URL, {
+          browser.loadURI(Services.io.newURI(TABBY_URL), {
             triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
           });
         } catch (_) {}
@@ -213,13 +213,38 @@
       const browser = win.document.getElementById("tabby-browser");
       if (!browser) return { ok: false, result: "engine-browser-unavailable" };
       try {
-        browser.loadURI(TABBY_URL, {
+        browser.loadURI(Services.io.newURI(TABBY_URL), {
           triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
         });
         return { ok: true, result: "navigating" };
       } catch (error) {
         return { ok: false, result: "navigation-failed", error: String(error) };
       }
+    }
+
+    async function continueChat() {
+      let status = await query("voiceStatus", {}, 1000);
+      if (status?.active) {
+        await query("endVoice", {}, 1200);
+        await sleep(180);
+        status = await query("voiceStatus", {}, 1000);
+      }
+      if (status?.loggedOut) return { ...status, result: "needs-login" };
+
+      for (let i = 0; i < 35; i++) {
+        if (status?.ok && status?.composerReady) {
+          let fresh = false;
+          try {
+            const url = new URL(status.href || "");
+            fresh = url.origin === "https://chatgpt.com" && url.pathname === "/";
+          } catch (_) {}
+          return { ...status, ok: true, fresh, result: "continue-ready" };
+        }
+        await sleep(120);
+        status = await query("voiceStatus", {}, 650);
+        if (status?.loggedOut) return { ...status, result: "needs-login" };
+      }
+      return { ...status, ok: false, result: "continue-timeout" };
     }
 
     async function freshChat() {
@@ -312,6 +337,11 @@
         if (!win) win = await createEngineWindow();
         setEngineVisible(win, Boolean(command.debug));
         result = await freshChat();
+      } else if (name === "continue-chat") {
+        let win = findEngineWindow();
+        if (!win) win = await createEngineWindow();
+        setEngineVisible(win, Boolean(command.debug));
+        result = await continueChat();
       } else if (name === "activate") {
         const { win } = await ensureEngineWindow();
         setEngineVisible(win, Boolean(command.debug));
@@ -330,7 +360,7 @@
         });
       } else if (name === "end") {
         result = await query("endVoice", {}, 1200);
-        await resetEngineToMarker();
+        if (Boolean(command.reset)) await resetEngineToMarker();
         const win = findEngineWindow();
         setEngineVisible(win, Boolean(command.debug));
       } else if (name === "debug-dom") {

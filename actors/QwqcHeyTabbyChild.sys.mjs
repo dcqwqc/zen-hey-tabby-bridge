@@ -236,8 +236,15 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     if (!composer) return { ok: false, result: "composer-not-found", ...this.publicState() };
     const clean = String(text ?? "");
     if (clean.length > 0) this.setComposerText(composer, clean);
-    await new Promise(resolve => this.contentWindow.setTimeout(resolve, 120));
-    const send = this.findSendButton();
+    let send = null;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      send = this.findSendButton();
+      const disabled = send && (send.disabled || send.getAttribute?.("aria-disabled") === "true");
+      if (send && !disabled) break;
+      send = null;
+      await new Promise(resolve => this.contentWindow.setTimeout(resolve, 100));
+    }
     if (!send) return { ok: false, result: "send-button-not-found", ...this.publicState() };
     if (!this.trustedClick(send)) return { ok: false, result: "send-click-failed", ...this.publicState() };
     await new Promise(resolve => this.contentWindow.setTimeout(resolve, 180));
