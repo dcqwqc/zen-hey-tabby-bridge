@@ -118,7 +118,7 @@
         "qwqc.hey_tabby.runtime.last_result",
         String(result?.result || "actor-unavailable")
       );
-      Services.prefs.setIntPref("qwqc.hey_tabby.runtime.last_activation_ms", Date.now());
+      Services.prefs.setStringPref("qwqc.hey_tabby.runtime.last_activation_ms", String(Date.now()));
       log("activate", result);
       return result || { ok: false, result: "actor-unavailable" };
     }
