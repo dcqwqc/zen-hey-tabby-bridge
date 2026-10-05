@@ -1,4 +1,160 @@
 export class QwqcHeyTabbyChild extends JSWindowActorChild {
+  actorCreated() {
+    this._tabbyAudioTracks = [];
+    this._mediaHookInstalled = false;
+    this.installMediaHook();
+  }
+
+  didDestroy() {
+    this._tabbyAudioTracks = [];
+  }
+
+  installMediaHook() {
+    if (this._mediaHookInstalled) return true;
+    try {
+      const rawWin = Cu.waiveXrays(this.contentWindow);
+      const mediaDevices = rawWin?.navigator?.mediaDevices;
+      if (!mediaDevices || typeof mediaDevices.getUserMedia !== "function") return false;
+      const original = mediaDevices.getUserMedia.bind(mediaDevices);
+      const actor = this;
+      const wrapper = function(constraints) {
+        const promise = original(constraints);
+        try {
+          return promise.then(stream => {
+            try {
+              const tracks = Array.from(stream?.getAudioTracks?.() || []);
+              for (const track of tracks) {
+                if (!actor._tabbyAudioTracks.includes(track)) actor._tabbyAudioTracks.push(track);
+              }
+              actor._tabbyAudioTracks = actor._tabbyAudioTracks.filter(track => track?.readyState !== "ended");
+            } catch (_) {}
+            return stream;
+          });
+        } catch (_) {
+          return promise;
+        }
+      };
+      Cu.exportFunction(wrapper, mediaDevices, { defineAs: "getUserMedia", allowCrossOriginArguments: true });
+      this._mediaHookInstalled = true;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  audioTrackState() {
+    this.installMediaHook();
+    const tracks = Array.from(this._tabbyAudioTracks || []).filter(Boolean);
+    return tracks.map((track, index) => {
+      let settings = {};
+      try { settings = track.getSettings?.() || {}; } catch (_) {}
+      return {
+        index,
+        kind: String(track.kind || ""),
+        label: String(track.label || ""),
+        enabled: Boolean(track.enabled),
+        muted: Boolean(track.muted),
+        readyState: String(track.readyState || ""),
+        deviceId: String(settings.deviceId || ""),
+        sampleRate: Number(settings.sampleRate || 0),
+        channelCount: Number(settings.channelCount || 0),
+      };
+    });
+  }
+
+  forceAudioTracksOn() {
+    this.installMediaHook();
+    const tracks = Array.from(this._tabbyAudioTracks || []).filter(track => track && track.readyState !== "ended");
+    let changed = 0;
+    for (const track of tracks) {
+      try {
+        if (!track.enabled) { track.enabled = true; changed += 1; }
+      } catch (_) {}
+    }
+    return {
+      ok: tracks.length > 0,
+      result: tracks.length ? "audio-tracks-enabled" : "no-audio-tracks-captured",
+      changed,
+      tracks: this.audioTrackState(),
+      ...this.publicState(),
+    };
+  }
+  async mediaEnvironment() {
+    const rawWin = Cu.waiveXrays(this.contentWindow);
+    let devices = [];
+    let enumerateError = "";
+    try {
+      const rawDevices = await rawWin.navigator.mediaDevices.enumerateDevices();
+      devices = Array.from(rawDevices || []).map(d => ({
+        kind:String(d.kind || ""), label:String(d.label || ""),
+        deviceId:String(d.deviceId || ""), groupId:String(d.groupId || ""),
+      }));
+    } catch (error) {
+      enumerateError = String(error?.name || "") + ": " + String(error?.message || error || "");
+    }
+    return {
+      ok: true, result: "media-environment",
+      secureContext: Boolean(rawWin.isSecureContext),
+      visibilityState: String(rawWin.document?.visibilityState || ""),
+      documentHidden: Boolean(rawWin.document?.hidden),
+      documentHasFocus: Boolean(rawWin.document?.hasFocus?.()),
+      userActivation: {
+        isActive:Boolean(rawWin.navigator?.userActivation?.isActive),
+        hasBeenActive:Boolean(rawWin.navigator?.userActivation?.hasBeenActive),
+      },
+      enumerateError, devices,
+      ...this.publicState(),
+    };
+  }
+
+  async probeMicrophoneMedia() {
+    const rawWin = Cu.waiveXrays(this.contentWindow);
+    const mediaDevices = rawWin?.navigator?.mediaDevices;
+    if (!mediaDevices || typeof mediaDevices.getUserMedia !== "function")
+      return { ok:false, result:"getusermedia-unavailable", ...this.publicState() };
+    let handlingUserInput = null;
+    let activationDuring = { isActive:false, hasBeenActive:false };
+    try {
+      try { handlingUserInput = this.contentWindow.windowUtils.setHandlingUserInput(true); } catch (_) {}
+      activationDuring = {
+        isActive:Boolean(rawWin.navigator?.userActivation?.isActive),
+        hasBeenActive:Boolean(rawWin.navigator?.userActivation?.hasBeenActive),
+      };
+      const constraints = Cu.cloneInto({ audio:true, video:false }, rawWin);
+      const gum = mediaDevices.getUserMedia(constraints);
+      const timeout = new Promise((_, reject) =>
+        this.contentWindow.setTimeout(() => reject(new Error("getUserMedia timeout")), 4500)
+      );
+      const stream = await Promise.race([gum, timeout]);
+      const tracks = Array.from(stream?.getAudioTracks?.() || []);
+      const info = tracks.map(track => {
+        let settings = {};
+        try { settings = track.getSettings?.() || {}; } catch (_) {}
+        return {
+          kind:String(track.kind || ""), label:String(track.label || ""),
+          enabled:Boolean(track.enabled), muted:Boolean(track.muted),
+          readyState:String(track.readyState || ""),
+          deviceId:String(settings.deviceId || ""), sampleRate:Number(settings.sampleRate || 0),
+          channelCount:Number(settings.channelCount || 0),
+        };
+      });
+      for (const track of tracks) { try { track.stop(); } catch (_) {} }
+      return { ok:true, result:"getusermedia-ok", activationDuring, tracks:info, ...this.publicState() };
+    } catch (error) {
+      return {
+        ok:false,
+        result:String(error?.message || "").includes("timeout") ? "getusermedia-timeout" : "getusermedia-failed",
+        activationDuring,
+        errorName:String(error?.name || ""), errorMessage:String(error?.message || error || ""),
+        ...this.publicState(),
+      };
+    } finally {
+      try { handlingUserInput?.destruct?.(); } catch (_) {}
+      try { if (!handlingUserInput) this.contentWindow.windowUtils.setHandlingUserInput(false); } catch (_) {}
+    }
+  }
+
+
   static labelFor(element) {
     if (!element) return "";
     return [
@@ -74,6 +230,14 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
         /[?&]mode=voice(?:$|&)/.test(link);
     });
     const active = Boolean(activeControl) || /[?&]mode=voice(?:$|&)/.test(href);
+    const micOffControl = entries.find(({ label }) =>
+      /^(turn on microphone|unmute microphone|unmute mic|microphone off|mic off)$/.test(label) ||
+      /(turn on|unmute).*(microphone|mic)/.test(label)
+    );
+    const micOnControl = entries.find(({ label }) =>
+      /^(turn off microphone|mute microphone|mute mic|microphone on|mic on)$/.test(label) ||
+      /(turn off|mute).*(microphone|mic)/.test(label)
+    );
 
     const busyElement = this.document?.querySelector?.('[data-testid*="stop-button"], .result-streaming');
     const workingButton = entries.find(({ label }) =>
@@ -95,6 +259,9 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       title: this.document?.title || "",
       activeControl: activeControl?.element || null,
       startControl: startControl?.element || null,
+      micMuted: Boolean(micOffControl),
+      micOffControl: micOffControl?.element || null,
+      micOnControl: micOnControl?.element || null,
     };
   }
 
@@ -167,8 +334,127 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       loggedOut: Boolean(state.loggedOut),
       working: Boolean(state.working),
       composerReady: Boolean(state.composerReady),
+      micMuted: Boolean(state.micMuted),
+      audioTracks: this.audioTrackState?.() || [],
       href: state.href || "",
       title: state.title || "",
+    };
+  }
+
+  armMicEventProbe() {
+    const state = this.state();
+    const button = state.micOffControl || state.micOnControl || null;
+    if (!button) return { ok:false, result:"microphone-control-not-found", ...this.publicState(state) };
+    this._micProbeEvents = [];
+    if (this._micProbeButton && this._micProbeHandlers) {
+      for (const [type, handler] of this._micProbeHandlers) {
+        try { this._micProbeButton.removeEventListener(type, handler, true); } catch (_) {}
+      }
+    }
+    const handlers = [];
+    for (const type of ["pointerdown","pointerup","mousedown","mouseup","click","keydown","keyup"]) {
+      const handler = event => {
+        try {
+          this._micProbeEvents.push({
+            type,
+            isTrusted: Boolean(event.isTrusted),
+            targetAria: event.target?.getAttribute?.("aria-label") || "",
+            currentAria: event.currentTarget?.getAttribute?.("aria-label") || "",
+            clientX: Number(event.clientX || 0), clientY: Number(event.clientY || 0),
+            key: String(event.key || ""), code: String(event.code || ""),
+            defaultPrevented: Boolean(event.defaultPrevented),
+            userActivation: {
+              isActive: Boolean(this.contentWindow.navigator?.userActivation?.isActive),
+              hasBeenActive: Boolean(this.contentWindow.navigator?.userActivation?.hasBeenActive),
+            },
+            timestamp: Date.now(),
+          });
+        } catch (_) {}
+      };
+      button.addEventListener(type, handler, true);
+      handlers.push([type, handler]);
+    }
+    this._micProbeButton = button;
+    this._micProbeHandlers = handlers;
+    return { ok:true, result:"mic-probe-armed", ...this.publicState(state) };
+  }
+
+  micEventProbeState() {
+    return { ok:true, result:"mic-probe-state", events:Array.from(this._micProbeEvents || []), ...this.publicState() };
+  }
+
+  focusMicControl() {
+    const state = this.state();
+    const button = state.micOffControl || state.micOnControl || null;
+    if (!button) return { ok:false, result:"microphone-control-not-found", ...this.publicState(state) };
+    try {
+      button.focus({ preventScroll:true });
+      const active = this.document?.activeElement;
+      const rect = button.getBoundingClientRect();
+      return {
+        ok: active === button,
+        result: active === button ? "microphone-focused" : "microphone-focus-failed",
+        activeAria: active?.getAttribute?.("aria-label") || "",
+        micRect: { x:rect.x, y:rect.y, width:rect.width, height:rect.height },
+        ...this.publicState(),
+      };
+    } catch (error) {
+      return { ok:false, result:"microphone-focus-error", error:String(error), ...this.publicState(state) };
+    }
+  }
+
+  async ensureMicrophoneOn() {
+    const before = this.state();
+    if (!before.active)
+      return { ok:false, result:"voice-not-active", ...this.publicState(before) };
+    if (!before.micMuted)
+      return { ok:true, result:"microphone-on", ...this.publicState(before) };
+    const button = before.micOffControl;
+    if (!button)
+      return { ok:false, result:"microphone-control-not-found", ...this.publicState(before) };
+
+    let handlingUserInput = null;
+    let activationDuring = { isActive:false, hasBeenActive:false };
+    let clickError = "";
+    try {
+      const utils = this.contentWindow.windowUtils;
+      try { handlingUserInput = utils.setHandlingUserInput(true); } catch (_) {}
+      activationDuring = {
+        isActive:Boolean(this.contentWindow.navigator?.userActivation?.isActive),
+        hasBeenActive:Boolean(this.contentWindow.navigator?.userActivation?.hasBeenActive),
+      };
+      button.focus?.({ preventScroll:true });
+      // Use a trusted Gecko click while inside the privileged user-input scope.
+      const rect = button.getBoundingClientRect();
+      const x = Math.max(1, rect.left + rect.width / 2);
+      const y = Math.max(1, rect.top + rect.height / 2);
+      try {
+        utils.sendMouseEvent("mousedown", x, y, 0, 1, 0);
+        utils.sendMouseEvent("mouseup", x, y, 0, 1, 0);
+        utils.sendMouseEvent("click", x, y, 0, 1, 0);
+      } catch (error) {
+        clickError = String(error);
+        try { button.click(); } catch (_) {}
+      }
+    } catch (error) {
+      clickError = String(error);
+    } finally {
+      try { handlingUserInput?.destruct?.(); } catch (_) {}
+      try { if (!handlingUserInput) this.contentWindow.windowUtils.setHandlingUserInput(false); } catch (_) {}
+    }
+
+    await new Promise(resolve => this.contentWindow.setTimeout(resolve, 550));
+    const after = this.state();
+    return {
+      ok: !after.micMuted,
+      result: after.micMuted ? "microphone-still-muted" : "microphone-enabled",
+      activationDuring,
+      activationAfter: {
+        isActive:Boolean(this.contentWindow.navigator?.userActivation?.isActive),
+        hasBeenActive:Boolean(this.contentWindow.navigator?.userActivation?.hasBeenActive),
+      },
+      clickError,
+      ...this.publicState(after),
     };
   }
 
@@ -353,6 +639,23 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     }
   }
 
+  readLatestAloud() {
+    const doc = this.document;
+    if (!doc) return { ok:false, result:"document-unavailable", ...this.publicState() };
+    const buttons = Array.from(doc.querySelectorAll('button,[role="button"]'))
+      .filter(el => this.visible(el) && QwqcHeyTabbyChild.labelFor(el) === "read aloud");
+    const button = buttons[buttons.length - 1] || null;
+    if (!button) return { ok:false, result:"read-aloud-not-found", ...this.publicState() };
+    try {
+      button.focus?.({ preventScroll:true });
+      button.click();
+      return { ok:true, result:"read-aloud-started", ...this.publicState() };
+    } catch (_) {
+      const ok = this.trustedClick(button);
+      return { ok, result:ok ? "read-aloud-started" : "read-aloud-click-failed", ...this.publicState() };
+    }
+  }
+
   latestAssistantResponse() {
     const doc = this.document;
     if (!doc) return { ok: false, result: "document-unavailable", assistantCount: 0, assistantText: "" };
@@ -408,6 +711,47 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     };
   }
 
+  debugMicControl() {
+    const state = this.state();
+    let el = state.micOffControl || state.micOnControl || null;
+    const rows = [];
+    for (let depth = 0; el && depth < 7; depth++, el = el.parentElement) {
+      let reactKeys = [];
+      let functionProps = [];
+      let propKeys = [];
+      try {
+        const raw = Cu.waiveXrays(el);
+        reactKeys = Reflect.ownKeys(raw).map(String).filter(k => k.startsWith("__react")).slice(0, 20);
+        const propKey = reactKeys.find(k => k.startsWith("__reactProps$"));
+        const props = propKey ? raw[propKey] : null;
+        if (props) {
+          propKeys = Reflect.ownKeys(props).map(String).slice(0, 80);
+          functionProps = Reflect.ownKeys(props).filter(k => typeof props[k] === "function").map(String).slice(0, 40);
+        }
+      } catch (_) {}
+      let rect = null;
+      try {
+        const r = el.getBoundingClientRect();
+        rect = { x:r.x, y:r.y, width:r.width, height:r.height };
+      } catch (_) {}
+      rows.push({
+        depth,
+        tag: el.tagName,
+        aria: el.getAttribute?.("aria-label") || "",
+        role: el.getAttribute?.("role") || "",
+        testid: el.getAttribute?.("data-testid") || "",
+        cls: String(el.className || "").slice(0, 260),
+        disabled: Boolean(el.disabled),
+        rect,
+        reactKeys,
+        propKeys,
+        functionProps,
+        html: String(el.outerHTML || "").slice(0, 1200),
+      });
+    }
+    return { ok:true, result:"debug-mic", rows, ...this.publicState(state) };
+  }
+
   debugAllControls() {
     const doc = this.document;
     const rows = Array.from(doc?.querySelectorAll?.('button,[role="button"],input,textarea,[contenteditable="true"]') || [])
@@ -459,13 +803,23 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
   async receiveMessage(message) {
     switch (message.name) {
       case "activateVoice": return this.activateVoice();
+      case "ensureMicrophoneOn": return this.ensureMicrophoneOn();
+      case "audioTrackState": return { ok:true, result:"audio-track-state", tracks:this.audioTrackState(), ...this.publicState() };
+      case "forceAudioTracksOn": return this.forceAudioTracksOn();
+      case "probeMicrophoneMedia": return this.probeMicrophoneMedia();
+      case "mediaEnvironment": return this.mediaEnvironment();
+      case "armMicEventProbe": return this.armMicEventProbe();
+      case "micEventProbeState": return this.micEventProbeState();
+      case "focusMicControl": return this.focusMicControl();
       case "endVoice": return this.endVoice();
       case "newChat": return this.newChat();
       case "clearComposer": return this.clearComposer();
       case "sendText": return this.sendText(message.data?.text ?? "");
       case "pasteImage": return this.pasteImage(message.data || {});
       case "latestAssistantResponse": return this.latestAssistantResponse();
+      case "readLatestAloud": return this.readLatestAloud();
       case "debugComposer": return this.debugComposer();
+      case "debugMicControl": return this.debugMicControl();
       case "debugAllControls": return this.debugAllControls();
       case "voiceStatus": return { ok: true, result: "status", ...this.publicState() };
       default: return { ok: false, result: "unknown-message" };

@@ -8,7 +8,7 @@
   "use strict";
 
     const ACTOR_NAME = "QwqcHeyTabby";
-  const VERSION = "0.7.0";
+  const VERSION = "0.9.4";
   const TABBY_URL = "https://chatgpt.com/?tabby=1";
   const ENGINE_CHROME_URL = "chrome://userscripts/content/tabby-engine.xhtml";
   const COMMAND_PATH = PathUtils.join(PathUtils.profileDir, "tabby-bridge-command.json");
@@ -22,29 +22,39 @@
     return out;
   }
 
-  // Window scripts can load several times during session restore. A fresh
-  // process heartbeat makes this a true single controller without storing the
-  // controller on any particular browser window. After a process restart the
-  // old heartbeat is stale, so the first restored window takes ownership.
-  let controllerHeartbeat = 0;
-  try { controllerHeartbeat = Number(Services.prefs.getStringPref("qwqc.hey_tabby.runtime.controller_heartbeat", "0")); } catch (_) {}
-  if (Date.now() - controllerHeartbeat < 1500) return;
-  try { Services.prefs.setStringPref("qwqc.hey_tabby.runtime.controller_heartbeat", String(Date.now())); } catch (_) {}
+  // Every normal Zen chrome window keeps a tiny takeover watchdog. Exactly one
+  // window owns the Tabby command controller at a time. If that host window is
+  // later closed, another already-open Zen window notices the stale heartbeat
+  // and takes over without requiring a browser restart.
+  const HEARTBEAT_PREF = "qwqc.hey_tabby.runtime.controller_heartbeat";
+  const OWNER_PREF = "qwqc.hey_tabby.runtime.controller_owner";
+  const TAKEOVER_AFTER_MS = 3200;
+  const makeTimer = (callback, delay, repeating = false) => {
+    const t = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+    t.initWithCallback(callback, delay, repeating ? Ci.nsITimer.TYPE_REPEATING_SLACK : Ci.nsITimer.TYPE_ONE_SHOT);
+    return t;
+  };
+  const readHeartbeat = () => {
+    try { return Number(Services.prefs.getStringPref(HEARTBEAT_PREF, "0")); } catch (_) { return 0; }
+  };
+  const readOwner = () => {
+    try { return Services.prefs.getStringPref(OWNER_PREF, ""); } catch (_) { return ""; }
+  };
+  const ownerToken = `${Date.now()}-${Math.random().toString(36).slice(2)}-${window.windowUtils?.outerWindowID || "w"}`;
+  let localController = null;
+  let takeoverTimer = null;
 
-  function createController() {
-    const makeTimer = (callback, delay, repeating = false) => {
-      const t = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
-      t.initWithCallback(callback, delay, repeating ? Ci.nsITimer.TYPE_REPEATING_SLACK : Ci.nsITimer.TYPE_ONE_SHOT);
-      return t;
-    };
+  function createController(controllerToken) {
     const sleep = ms => new Promise(resolve => makeTimer(() => resolve(), ms, false));
     let destroyed = false;
     let actorRegisteredHere = false;
     let timer = null;
+    let heartbeatTimer = null;
     let pollBusy = false;
     let lastSeq = -1;
     let debugVisible = false;
     let engineWindow = null;
+    const workerWindows = new Map();
 
     function log(...args) { console.debug("[Tabby Engine]", ...args); }
 
@@ -62,13 +72,52 @@
       }
     }
 
-    function grantMicPermission() {
+    function grantMicPermission(browser = null) {
+      const principals = [];
       try {
-        const principal = Services.scriptSecurityManager.createContentPrincipal(
+        principals.push(Services.scriptSecurityManager.createContentPrincipal(
           Services.io.newURI("https://chatgpt.com/"), {}
-        );
-        Services.perms.addFromPrincipal(principal, "microphone", Services.perms.ALLOW_ACTION);
-      } catch (error) { log("mic permission", error); }
+        ));
+      } catch (_) {}
+      try { if (browser?.contentPrincipal) principals.push(browser.contentPrincipal); } catch (_) {}
+      try {
+        const p = browser?.browsingContext?.currentWindowGlobal?.documentPrincipal;
+        if (p) principals.push(p);
+      } catch (_) {}
+
+      const seen = new Set();
+      const rows = [];
+      for (const principal of principals) {
+        try {
+          const origin = String(principal.origin || "");
+          const attrs = JSON.stringify(principal.originAttributes || {});
+          const key = origin + "|" + attrs;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          Services.perms.addFromPrincipal(
+            principal,
+            "microphone",
+            Ci.nsIPermissionManager.ALLOW_ACTION,
+            Ci.nsIPermissionManager.EXPIRE_NEVER,
+            0
+          );
+          rows.push({
+            origin,
+            originAttributes: principal.originAttributes || {},
+            permission: Services.perms.testPermissionFromPrincipal(principal, "microphone"),
+          });
+        } catch (error) {
+          rows.push({ error: String(error) });
+        }
+      }
+      return rows;
+    }
+
+    async function micPermissionState() {
+      const { browser } = await ensureEngineWindow(2200);
+      if (!browser) return { ok:false, result:"engine-browser-unavailable" };
+      const rows = grantMicPermission(browser);
+      return { ok:true, result:"microphone-permission", rows };
     }
 
     function styleEngineWindow(win) {
@@ -81,14 +130,153 @@
     function findEngineWindow() {
       if (engineWindow && !engineWindow.closed) return engineWindow;
       try {
-        const existing = Services.wm.getMostRecentWindow("qwqc:tabby-engine");
-        if (existing && !existing.closed) {
+        const it = Services.wm.getEnumerator("qwqc:tabby-engine");
+        while (it.hasMoreElements()) {
+          const existing = it.getNext();
+          if (!existing || existing.closed) continue;
+          const title = String(existing.document?.title || "");
+          if (title.startsWith("Tabby Work · ")) continue;
           engineWindow = existing;
           styleEngineWindow(existing);
           return existing;
         }
       } catch (_) {}
       return null;
+    }
+
+    function safeChatUrl(raw) {
+      try {
+        const url = new URL(String(raw || ""));
+        if (url.origin !== "https://chatgpt.com" || !url.pathname.startsWith("/c/")) return null;
+        return url.href;
+      } catch (_) { return null; }
+    }
+
+    function safeTaskId(raw) {
+      return String(raw || "").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 80);
+    }
+
+    function workerTitle(taskId) { return `Tabby Work · ${safeTaskId(taskId)}`; }
+
+    function styleWorkerWindow(win, taskId) {
+      if (!win || win.closed) return;
+      try { win.document.title = workerTitle(taskId); } catch (_) {}
+    }
+
+    function findWorkerWindow(taskId) {
+      taskId = safeTaskId(taskId);
+      const cached = workerWindows.get(taskId);
+      if (cached && !cached.closed) return cached;
+      try {
+        const it = Services.wm.getEnumerator("qwqc:tabby-engine");
+        while (it.hasMoreElements()) {
+          const win = it.getNext();
+          if (!win || win.closed) continue;
+          if (String(win.document?.title || "") === workerTitle(taskId)) {
+            workerWindows.set(taskId, win);
+            return win;
+          }
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    async function createWorkerWindow(taskId, rawUrl) {
+      taskId = safeTaskId(taskId);
+      const url = safeChatUrl(rawUrl);
+      if (!taskId || !url) return null;
+      const host = hostWindow();
+      if (!host) return null;
+      let win = null;
+      try {
+        win = host.openDialog(
+          ENGINE_CHROME_URL,
+          "_blank",
+          "chrome,dialog=no,resizable,width=900,height=760,left=-10000,top=-10000"
+        );
+      } catch (error) {
+        log("worker openDialog failed", error);
+        return null;
+      }
+      if (!await waitForEngineWindow(win)) return null;
+      styleWorkerWindow(win, taskId);
+      workerWindows.set(taskId, win);
+      const browser = win.document.getElementById("tabby-browser");
+      try {
+        browser.loadURI(Services.io.newURI(url), {
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+      } catch (error) {
+        log("worker loadURI failed", error);
+        return null;
+      }
+      return win;
+    }
+
+    async function ensureWorkerWindow(taskId, rawUrl = "", timeoutMs = 3000, reload = false) {
+      taskId = safeTaskId(taskId);
+      const url = rawUrl ? safeChatUrl(rawUrl) : null;
+      if (!taskId) return { win:null, browser:null, actor:null };
+      let win = findWorkerWindow(taskId);
+      if (!win && url) win = await createWorkerWindow(taskId, url);
+      if (!win || win.closed) return { win:null, browser:null, actor:null };
+      if (!await waitForEngineWindow(win, Math.min(timeoutMs, 3000))) return { win,browser:null,actor:null };
+      styleWorkerWindow(win, taskId);
+      const browser = win.document.getElementById("tabby-browser");
+      if (!browser) return { win,browser:null,actor:null };
+      let current = "";
+      try { current = browser.currentURI?.spec || ""; } catch (_) {}
+      if (url && (reload || current !== url)) {
+        try {
+          browser.loadURI(Services.io.newURI(url), {
+            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          });
+        } catch (_) {}
+      }
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        try {
+          const global = browser?.browsingContext?.currentWindowGlobal;
+          const uri = String(global?.documentURI?.spec || global?.documentURI || "");
+          if (uri.startsWith("https://chatgpt.com/")) {
+            const actor = global.getActor?.(ACTOR_NAME);
+            if (actor) return { win,browser,actor };
+          }
+        } catch (_) {}
+        await sleep(100);
+      }
+      return { win,browser,actor:null };
+    }
+
+    async function queryWorker(taskId, name, data = {}, timeoutMs = 2500) {
+      const { win, actor } = await ensureWorkerWindow(taskId, "", timeoutMs, false);
+      if (!actor) return { ok:false, result:"worker-actor-unavailable", taskId:safeTaskId(taskId) };
+      try {
+        const result = await actor.sendQuery(name, data);
+        return { ...result, taskId:safeTaskId(taskId), workerWindow:true,
+          engineWindowState:(() => { try { return win.windowState; } catch (_) { return -1; } })() };
+      } catch (error) {
+        return { ok:false, result:String(error), taskId:safeTaskId(taskId), workerWindow:true };
+      }
+    }
+
+    async function openWorker(taskId, rawUrl, reload = false) {
+      const url = safeChatUrl(rawUrl);
+      if (!url) return { ok:false, result:"invalid-chat-url" };
+      const { actor } = await ensureWorkerWindow(taskId, url, 9000, reload);
+      if (!actor) return { ok:false, result:"worker-open-timeout", taskId:safeTaskId(taskId) };
+      const result = await actor.sendQuery("voiceStatus", {});
+      return { ...result, ok:true, result:"worker-ready", taskId:safeTaskId(taskId), workerWindow:true };
+    }
+
+    async function closeWorker(taskId) {
+      taskId = safeTaskId(taskId);
+      const win = findWorkerWindow(taskId);
+      workerWindows.delete(taskId);
+      if (win && !win.closed) {
+        try { win.close(); } catch (_) {}
+      }
+      return { ok:true, result:"worker-closed", taskId };
     }
 
     async function waitForEngineWindow(win, timeoutMs = 10000) {
@@ -168,6 +356,7 @@
           const global = browser?.browsingContext?.currentWindowGlobal;
           const uri = global?.documentURI?.spec || global?.documentURI || "";
           if (String(uri).startsWith("https://chatgpt.com/")) {
+            grantMicPermission(browser);
             const actor = global.getActor?.(ACTOR_NAME);
             if (actor) return { win, browser, actor };
           }
@@ -188,6 +377,28 @@
       styleEngineWindow(win);
     }
 
+    async function queryNormalSelected(name, data = {}, timeoutMs = 6000) {
+      for (const win of browserWindows()) {
+        if (!win || win.closed) continue;
+        const browser = win.gBrowser?.selectedBrowser;
+        if (!browser) continue;
+        let uri = "";
+        try { uri = browser.currentURI?.spec || ""; } catch (_) {}
+        if (!String(uri).startsWith("https://chatgpt.com/")) continue;
+        try {
+          grantMicPermission(browser);
+          const global = browser.browsingContext?.currentWindowGlobal;
+          const actor = global?.getActor?.(ACTOR_NAME);
+          if (!actor) continue;
+          const result = await actor.sendQuery(name, data);
+          return { ...result, normalBrowser:true, normalHref:uri };
+        } catch (error) {
+          return { ok:false, result:"normal-browser-query-failed", error:String(error), normalHref:uri };
+        }
+      }
+      return { ok:false, result:"normal-chatgpt-tab-not-found" };
+    }
+
     async function query(name, data = {}, timeoutMs = 2200) {
       const { win, actor } = await ensureEngineWindow(timeoutMs);
       if (!actor) return { ok: false, result: "actor-unavailable", active: false, debugVisible };
@@ -202,6 +413,33 @@
       } catch (error) {
         return { ok: false, result: String(error), active: false, debugVisible, engineWindow: true };
       }
+    }
+
+    async function focusEngineContent() {
+      const { win, browser, actor } = await ensureEngineWindow(3000);
+      if (!win || !browser) return { ok:false, result:"engine-browser-unavailable" };
+      try { win.focus(); } catch (_) {}
+      try { Services.focus.activeWindow = win; } catch (_) {}
+      try { Services.focus.setFocus(browser, Services.focus.FLAG_NOSCROLL); } catch (_) {
+        try { browser.focus(); } catch (_) {}
+      }
+      try { browser.focus(); } catch (_) {}
+      await sleep(80);
+      let actorResult = {};
+      if (actor) {
+        try { actorResult = await actor.sendQuery("focusMicControl", {}); } catch (_) {}
+      }
+      let focused = null;
+      try { focused = Services.focus.focusedElement; } catch (_) {}
+      return {
+        ok: Boolean(actorResult?.ok),
+        result: actorResult?.ok ? "engine-content-focused" : "engine-content-focus-failed",
+        actorResult,
+        chromeActiveTitle: String(Services.focus.activeWindow?.document?.title || ""),
+        chromeFocusedTag: String(focused?.tagName || focused?.localName || ""),
+        chromeFocusedId: String(focused?.id || ""),
+        debugVisible,
+      };
     }
 
     async function navigateEngineToMarker() {
@@ -220,6 +458,38 @@
       } catch (error) {
         return { ok: false, result: "navigation-failed", error: String(error) };
       }
+    }
+
+    async function openChat(rawUrl) {
+      const url = safeChatUrl(rawUrl);
+      if (!url) return { ok:false, result:"invalid-chat-url" };
+      const { win, browser } = await ensureEngineWindow(3000);
+      if (!win || !browser) return { ok:false, result:"engine-browser-unavailable" };
+      try {
+        const status = await query("voiceStatus", {}, 900);
+        if (status?.active) await query("endVoice", {}, 1200);
+      } catch (_) {}
+      try {
+        browser.loadURI(Services.io.newURI(url), {
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+      } catch (error) {
+        return { ok:false, result:"navigation-failed", error:String(error) };
+      }
+      let stable = 0;
+      let lastHref = "";
+      for (let i=0;i<80;i++) {
+        await sleep(120);
+        const status = await query("voiceStatus", {}, 650);
+        if (!status.ok) { stable=0; continue; }
+        if (status.loggedOut) return { ...status, result:"needs-login" };
+        const usable = status.composerReady && String(status.href || "").startsWith(url.split("?")[0]);
+        if (usable && status.href === lastHref) stable += 1;
+        else stable = usable ? 1 : 0;
+        lastHref = status.href || "";
+        if (stable >= 2) return { ...status, ok:true, result:"chat-open-ready" };
+      }
+      return { ok:false, result:"open-chat-timeout" };
     }
 
     async function continueChat() {
@@ -342,6 +612,16 @@
         if (!win) win = await createEngineWindow();
         setEngineVisible(win, Boolean(command.debug));
         result = await continueChat();
+      } else if (name === "open-chat") {
+        result = await openChat(String(command.url || ""));
+      } else if (name === "worker-open") {
+        result = await openWorker(command.taskId, command.url, Boolean(command.reload));
+      } else if (name === "worker-status") {
+        result = await queryWorker(command.taskId, "voiceStatus", {}, 1800);
+      } else if (name === "worker-latest-response") {
+        result = await queryWorker(command.taskId, "latestAssistantResponse", {}, 1800);
+      } else if (name === "worker-close") {
+        result = await closeWorker(command.taskId);
       } else if (name === "activate") {
         const { win } = await ensureEngineWindow();
         setEngineVisible(win, Boolean(command.debug));
@@ -350,10 +630,43 @@
         // occupied during that rehydration made a successful activation look
         // like a timeout. The Tabby backend polls voiceStatus independently.
         result = await query("activateVoice");
+      } else if (name === "arm-mic-probe") {
+        result = await query("armMicEventProbe", {}, 1200);
+      } else if (name === "mic-probe-state") {
+        result = await query("micEventProbeState", {}, 1200);
+      } else if (name === "audio-track-state") {
+        result = await query("audioTrackState", {}, 1200);
+      } else if (name === "force-audio-tracks-on") {
+        result = await query("forceAudioTracksOn", {}, 1600);
+      } else if (name === "probe-mic-media") {
+        result = await query("probeMicrophoneMedia", {}, 8000);
+      } else if (name === "mic-permission") {
+        result = await micPermissionState();
+      } else if (name === "normal-media-environment") {
+        result = await queryNormalSelected("mediaEnvironment", {}, 5000);
+      } else if (name === "normal-probe-mic-media") {
+        result = await queryNormalSelected("probeMicrophoneMedia", {}, 7000);
+      } else if (name === "media-environment") {
+        const { browser } = await ensureEngineWindow(2200);
+        const actorState = await query("mediaEnvironment", {}, 5000);
+        result = {
+          ...actorState,
+          browserDocShellIsActive: (() => { try { return Boolean(browser?.docShellIsActive); } catch (_) { return null; } })(),
+          browsingContextIsActive: (() => { try { return Boolean(browser?.browsingContext?.isActive); } catch (_) { return null; } })(),
+          remoteType: String(browser?.remoteType || ""),
+        };
+      } else if (name === "focus-engine-content") {
+        result = await focusEngineContent();
+      } else if (name === "focus-mic") {
+        result = await query("focusMicControl", {}, 1200);
+      } else if (name === "mic-on") {
+        result = await query("ensureMicrophoneOn", {}, 2200);
       } else if (name === "send-text") {
         result = await query("sendText", { text: String(command.text || "") });
       } else if (name === "latest-response") {
         result = await query("latestAssistantResponse", {}, 1200);
+      } else if (name === "read-aloud") {
+        result = await query("readLatestAloud", {}, 1600);
       } else if (name === "paste-image") {
         result = await query("pasteImage", {
           base64: String(command.base64 || ""),
@@ -365,6 +678,8 @@
         if (Boolean(command.reset)) await resetEngineToMarker();
         const win = findEngineWindow();
         setEngineVisible(win, Boolean(command.debug));
+      } else if (name === "debug-mic") {
+        result = await query("debugMicControl", {}, 1500);
       } else if (name === "debug-dom") {
         result = await query("debugComposer");
       } else if (name === "debug-all") {
@@ -385,7 +700,8 @@
       try {
         const now = Date.now();
         Services.prefs.setStringPref("qwqc.hey_tabby.runtime.last_poll_ms", String(now));
-        Services.prefs.setStringPref("qwqc.hey_tabby.runtime.controller_heartbeat", String(now));
+        if (readOwner() === controllerToken)
+          Services.prefs.setStringPref(HEARTBEAT_PREF, String(now));
         if (await IOUtils.exists(COMMAND_PATH)) {
           const command = await IOUtils.readJSON(COMMAND_PATH);
           await handleCommand(command);
@@ -426,6 +742,14 @@
         }
       } catch (_) {}
 
+      Services.prefs.setStringPref(OWNER_PREF, controllerToken);
+      Services.prefs.setStringPref(HEARTBEAT_PREF, String(Date.now()));
+      heartbeatTimer = makeTimer(() => {
+        try {
+          if (!destroyed && readOwner() === controllerToken)
+            Services.prefs.setStringPref(HEARTBEAT_PREF, String(Date.now()));
+        } catch (_) {}
+      }, 500, true);
       timer = makeTimer(() => { poll(); }, 150, true);
       await writeState(0, "init", {
         ok: true, result: "ready", active: false, debugVisible: false,
@@ -438,25 +762,59 @@
       if (destroyed) return;
       destroyed = true;
       if (timer) { try { timer.cancel(); } catch (_) {} }
+      if (heartbeatTimer) { try { heartbeatTimer.cancel(); } catch (_) {} }
       if (actorRegisteredHere) {
         try { ChromeUtils.unregisterWindowActor(ACTOR_NAME); } catch (_) {}
       }
-      Services.prefs.setBoolPref("qwqc.hey_tabby.runtime.loaded", false);
-      try { Services.prefs.setStringPref("qwqc.hey_tabby.runtime.controller_heartbeat", "0"); } catch (_) {}
+      if (readOwner() === controllerToken) {
+        Services.prefs.setBoolPref("qwqc.hey_tabby.runtime.loaded", false);
+        try { Services.prefs.setStringPref(HEARTBEAT_PREF, "0"); } catch (_) {}
+        try { Services.prefs.setStringPref(OWNER_PREF, ""); } catch (_) {}
+      }
     }
 
-    init().catch(error => console.error("[Tabby Engine] init failed", error));
-    return { version: VERSION, destroy };
+    init().catch(error => {
+      try { Services.prefs.setStringPref("qwqc.hey_tabby.runtime.bootstrap_error", String(error)); } catch (_) {}
+      console.error("[Tabby Engine] init failed", error);
+    });
+    return { version: VERSION, destroy, token: controllerToken };
   }
 
-  const start = () => {
+  const tryTakeover = () => {
     try {
-      createController();
+      const now = Date.now();
+      const heartbeat = readHeartbeat();
+      if (now - heartbeat < TAKEOVER_AFTER_MS) return false;
+      // Firefox chrome-window callbacks run on the parent main thread, so this
+      // claim/write pair is serialized across windows. Claim before creating
+      // the controller so the next watchdog sees a fresh owner immediately.
+      Services.prefs.setStringPref(OWNER_PREF, ownerToken);
+      Services.prefs.setStringPref(HEARTBEAT_PREF, String(now));
+      if (localController) {
+        try { localController.destroy(); } catch (_) {}
+      }
+      localController = createController(ownerToken);
+      return true;
     } catch (error) {
       try { Services.prefs.setStringPref("qwqc.hey_tabby.runtime.bootstrap_error", String(error)); } catch (_) {}
-      console.error("[Tabby Engine] failed to initialize", error);
+      console.error("[Tabby Engine] takeover failed", error);
+      return false;
     }
   };
+
+  const start = () => {
+    tryTakeover();
+    takeoverTimer = makeTimer(() => {
+      // If another window owns the controller its independent heartbeat stays
+      // fresh. If that owner disappears, this window becomes the replacement.
+      if (Date.now() - readHeartbeat() >= TAKEOVER_AFTER_MS) tryTakeover();
+    }, 1000, true);
+  };
+
+  window.addEventListener("unload", () => {
+    if (takeoverTimer) { try { takeoverTimer.cancel(); } catch (_) {} }
+    if (localController) { try { localController.destroy(); } catch (_) {} }
+  }, { once: true });
 
   if (document.readyState === "complete") start();
   else window.addEventListener("load", start, { once: true });

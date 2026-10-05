@@ -50,6 +50,7 @@ mkdir -p "$DEST" "$ACTOR_ROOT"
 cp "$ROOT/theme.json" "$DEST/theme.json"
 cp "$ROOT/README.md" "$DEST/README.md"
 cp "$ROOT/hey-tabby.uc.js" "$DEST/hey-tabby.uc.js"
+cp "$ROOT/hey-tabby.uc.js" "$ENGINE_ROOT/tabby-controller.js"
 cp "$ROOT/actors/QwqcHeyTabbyChild.sys.mjs" "$ACTOR_ROOT/QwqcHeyTabbyChild.sys.mjs"
 cp "$ROOT/engine/tabby-engine.xhtml" "$ENGINE_ROOT/tabby-engine.xhtml"
 
@@ -73,4 +74,5 @@ PY
 echo "Deployed $MOD_ID to $DEST"
 echo "Actor: $ACTOR_ROOT/QwqcHeyTabbyChild.sys.mjs"
 echo "Engine: $ENGINE_ROOT/tabby-engine.xhtml"
+echo "Controller: $ENGINE_ROOT/tabby-controller.js"
 echo "Restart Zen or toggle the mod in Sine to load it."
