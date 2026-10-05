@@ -84,7 +84,12 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     let devices = [];
     let enumerateError = "";
     try {
-      const rawDevices = await rawWin.navigator.mediaDevices.enumerateDevices();
+      const rawDevices = await Promise.race([
+        rawWin.navigator.mediaDevices.enumerateDevices(),
+        new Promise((_, reject) =>
+          this.contentWindow.setTimeout(() => reject(new Error("enumerateDevices timeout")), 2500)
+        ),
+      ]);
       devices = Array.from(rawDevices || []).map(d => ({
         kind:String(d.kind || ""), label:String(d.label || ""),
         deviceId:String(d.deviceId || ""), groupId:String(d.groupId || ""),
@@ -121,9 +126,21 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
         hasBeenActive:Boolean(rawWin.navigator?.userActivation?.hasBeenActive),
       };
       const constraints = Cu.cloneInto({ audio:true, video:false }, rawWin);
+      let timedOut = false;
       const gum = mediaDevices.getUserMedia(constraints);
+      try {
+        gum.then(stream => {
+          if (!timedOut) return;
+          for (const track of Array.from(stream?.getTracks?.() || [])) {
+            try { track.stop(); } catch (_) {}
+          }
+        }).catch(() => {});
+      } catch (_) {}
       const timeout = new Promise((_, reject) =>
-        this.contentWindow.setTimeout(() => reject(new Error("getUserMedia timeout")), 4500)
+        this.contentWindow.setTimeout(() => {
+          timedOut = true;
+          reject(new Error("getUserMedia timeout"));
+        }, 4500)
       );
       const stream = await Promise.race([gum, timeout]);
       const tracks = Array.from(stream?.getAudioTracks?.() || []);
@@ -243,17 +260,28 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     const workingButton = entries.find(({ label }) =>
       /(stop generating|stop response|cancel response|interrupt response|searching the web|working on your request)/.test(label)
     );
+    const bodyText = String(this.document?.body?.innerText || "").toLowerCase();
+    const connectionInterrupted = /(connection interrupted|waiting for the complete answer|network error|something went wrong)/.test(bodyText);
+    // During a connection-interrupted turn ChatGPT currently exposes the
+    // composer abort control simply as aria-label="Stop", without the usual
+    // "Stop generating" wording or data-testid. Treat that generic Stop as a
+    // generation control only while the interruption banner is present.
+    const interruptedStop = connectionInterrupted
+      ? entries.find(({ label }) => label === "stop")
+      : null;
     // Voice mode itself contains persistent controls such as the model's
     // "Thinking effort" selector. Those are metadata, not evidence that the
     // assistant is currently thinking. While Voice is active the standalone
     // Tabby backend derives speaking/listening from real output amplitude.
-    const working = !active && Boolean((busyElement && this.visible(busyElement)) || workingButton);
+    const working = !active && Boolean((busyElement && this.visible(busyElement)) || workingButton || interruptedStop);
 
     return {
       active,
       ready: Boolean(startControl),
       loggedOut,
       working,
+      connectionInterrupted,
+      workingControl: workingButton?.element || interruptedStop?.element || ((busyElement && this.visible(busyElement)) ? busyElement : null),
       composerReady: Boolean(this.findComposer()),
       href,
       title: this.document?.title || "",
@@ -307,6 +335,18 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     return this.findComposer();
   }
 
+  async stopResponse() {
+    const before = this.state();
+    if (!before.working)
+      return { ok:true, result:"not-working", ...this.publicState(before) };
+    const control = before.workingControl;
+    if (!control)
+      return { ok:false, result:"stop-response-control-not-found", ...this.publicState(before) };
+    const clicked = this.trustedClick(control);
+    await new Promise(resolve => this.contentWindow.setTimeout(resolve, 140));
+    return { ok:Boolean(clicked), result:clicked ? "response-stop-requested" : "response-stop-click-failed", ...this.publicState() };
+  }
+
   async activateVoice() {
     // Do not wait for the active Voice UI inside this WindowActor query.
     // ChatGPT rehydrates/navigates the Voice surface after the click, which
@@ -333,6 +373,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       ready: Boolean(state.ready),
       loggedOut: Boolean(state.loggedOut),
       working: Boolean(state.working),
+      connectionInterrupted: Boolean(state.connectionInterrupted),
       composerReady: Boolean(state.composerReady),
       micMuted: Boolean(state.micMuted),
       audioTracks: this.audioTrackState?.() || [],
@@ -381,6 +422,18 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
 
   micEventProbeState() {
     return { ok:true, result:"mic-probe-state", events:Array.from(this._micProbeEvents || []), ...this.publicState() };
+  }
+
+  focusPage() {
+    try { this.contentWindow.focus?.(); } catch (_) {}
+    try { this.document?.documentElement?.focus?.({ preventScroll:true }); } catch (_) {}
+    const focused = Boolean(this.document?.hasFocus?.());
+    return {
+      ok: focused,
+      result: focused ? "page-focused" : "page-focus-failed",
+      documentHasFocus: focused,
+      ...this.publicState(),
+    };
   }
 
   focusMicControl() {
@@ -803,6 +856,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
   async receiveMessage(message) {
     switch (message.name) {
       case "activateVoice": return this.activateVoice();
+      case "stopResponse": return this.stopResponse();
       case "ensureMicrophoneOn": return this.ensureMicrophoneOn();
       case "audioTrackState": return { ok:true, result:"audio-track-state", tracks:this.audioTrackState(), ...this.publicState() };
       case "forceAudioTracksOn": return this.forceAudioTracksOn();
@@ -810,6 +864,7 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
       case "mediaEnvironment": return this.mediaEnvironment();
       case "armMicEventProbe": return this.armMicEventProbe();
       case "micEventProbeState": return this.micEventProbeState();
+      case "focusPage": return this.focusPage();
       case "focusMicControl": return this.focusMicControl();
       case "endVoice": return this.endVoice();
       case "newChat": return this.newChat();

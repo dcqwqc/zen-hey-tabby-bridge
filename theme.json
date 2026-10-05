@@ -1,7 +1,7 @@
 {
   "id": "qwqc-hey-tabby-bridge",
   "name": "QWQC Hey Tabby Voice Bridge",
-  "description": "Minimal dedicated Gecko WebView window for the Tabby Caelestia companion.",
+  "description": "Hidden native Zen window bridge for Tabby with real ChatGPT Voice and WebRTC microphone capture.",
   "homepage": "https://github.com/dcqwqc/zen-hey-tabby-bridge",
   "scripts": {
     "hey-tabby.uc.js": {
@@ -12,7 +12,7 @@
     }
   },
   "author": "qwqc",
-  "version": "0.9.4",
+  "version": "0.10.10",
   "tags": [
     "Zen",
     "ChatGPT",
@@ -20,7 +20,7 @@
     "Companion"
   ],
   "createdAt": "2026-10-04",
-  "updatedAt": "2026-10-04",
+  "updatedAt": "2026-10-05",
   "fork": [
     "zen"
   ],

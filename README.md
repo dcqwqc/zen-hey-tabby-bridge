@@ -1,39 +1,29 @@
 # QWQC Hey Tabby Voice Bridge
 
-Thin Zen/Sine bridge for the local Hey Tabby companion.
+Zen/Sine bridge for the local Tabby desktop companion. It drives the real ChatGPT web Voice UI through a privileged `JSWindowActor` while keeping the companion engine isolated from the user's normal browsing window.
 
-Protocol7 focuses Zen and sends Ctrl+Alt+Shift+V. This mod prefers a pinned
-chatgpt.com tab, focuses it, and asks a dedicated JSWindowActor in the content
-process to activate the real ChatGPT Voice control.
+## Runtime architecture
 
-The bridge intentionally does not read conversation messages, extract ChatGPT
-responses, or use fixed screen coordinates. It only finds the Voice control by
-semantic DOM metadata and clicks it. The rest of the assistant remains outside
-the browser.
+Tabby uses a **real Zen browser window**, not an embedded XUL `<browser>` WebView. The engine is marked persistently, routed to Hyprland `special:tabby`, and kept rendering while unfocused. This matters because Gecko/WebRTC would allow microphone permission in the old embedded WebView but `getUserMedia({audio:true})` could still stall indefinitely.
 
-## Architecture
+The current Voice startup path is:
 
-Hey Tabby -> Protocol7 -> focus Zen -> Ctrl+Alt+Shift+V -> Sine chrome script
--> QwqcHeyTabby JSWindowActor -> ChatGPT Voice button
+`Tabby backend -> Sine bridge -> hidden native Zen window -> internal content focus -> ChatGPT Voice control -> live WebRTC microphone stream`
 
-Keep the intended Companion chat pinned in Zen. If no pinned ChatGPT tab exists,
-the most recently accessed ChatGPT tab is used. If no ChatGPT tab exists, one is
-opened.
+The bridge grants the ChatGPT microphone permission for the engine principal, focuses the hidden content document internally, activates the semantic ChatGPT Voice control, waits for Voice or a live audio track, then allows the desktop integration to restore compositor focus to the user's previous window. The engine itself remains on `special:tabby`; it does not need to appear on the visible workspace.
 
-Run scripts/deploy-local.sh to install into the active Zen profile. Restart Zen
-or toggle the mod in Sine to load the new userChrome script.
+## Conversation lifecycle
 
+`continue-chat`, `new-chat`, and `open-chat` operate on the same dedicated engine window. `end` stops Voice and returns to the canonical `https://chatgpt.com/?tabby=1` composer. Engine identity is persisted through Firefox SessionStore so a restored Zen session can be recognized and repaired after restart.
 
-## v0.5 runtime
+The bridge also exposes the latest assistant response from the active conversation for Tabby's `always / text-only / never` text-display modes. This does not create a second model request.
 
-The bridge hosts ChatGPT in a minimal standalone Gecko chrome window containing exactly one `<browser>` element. It shares the signed-in Zen/Firefox profile and WebRTC stack, but has no Zen tabs, sidebar, toolbar, or browser chrome. Debug mode only moves that window between `special:tabby` and the active workspace.
+## Working windows
 
+Background Working tasks still use separate isolated engine windows and are routed to `special:tabby-work`. They are distinct from the main Voice engine.
 
-### Conversation lifecycle
+## Deployment
 
-Bridge v0.6 adds separate `continue-chat` and `new-chat` operations. `end` stops Voice without navigating away from the active conversation, allowing Tabby to resume the same `/c/...` thread after closing or backend/shell restarts. Fresh-chat navigation uses the parent Gecko `<browser>` and a real `nsIURI`, avoiding WindowActor destruction races. Text sending waits for ChatGPT's hydrated, enabled Send control before clicking.
+Run `scripts/deploy-local.sh` to install into the active Zen profile. Restart Zen or toggle the Sine mod when JavaScript/actor code changes.
 
-
-### Assistant text extraction (v0.7)
-
-The bridge exposes `latest-response`, which reads the latest assistant answer from the same hidden ChatGPT conversation. It supports both semantic message-role markup and ChatGPT's newer virtualized turn renderer by anchoring on stable assistant action controls. This powers Tabby's `always / text-only / never` reply display modes without issuing a second model request.
+Current bridge generation: **0.10.x**.
