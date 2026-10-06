@@ -8,7 +8,7 @@
   "use strict";
 
     const ACTOR_NAME = "QwqcHeyTabby";
-  const VERSION = "0.10.10";
+  const VERSION = "0.10.11";
   const TABBY_URL = "https://chatgpt.com/?tabby=1";
   const ENGINE_CHROME_URL = "chrome://userscripts/content/tabby-engine.xhtml";
   const COMMAND_PATH = PathUtils.join(PathUtils.profileDir, "tabby-bridge-command.json");
@@ -767,28 +767,16 @@
           ? preActivationStatus
           : await query("activateVoice", {}, 3000);
 
-        // Keep Gecko's content focus on the hidden engine just long enough for
-        // ChatGPT to acquire its real microphone stream. Once a live track (or
-        // active Voice surface) appears, restore Firefox focus to the user's
-        // previous normal Zen window. Hyprland never has to reveal special:tabby.
+        // Return at the same semantic transition that produces ChatGPT's
+        // Voice-on cue: the Voice surface itself becoming active. Microphone
+        // recovery is deliberately handled by Tabby's backend afterwards, so
+        // the green face never waits on a slower WebRTC track handshake.
         let activationStatus = {};
         const deadline = Date.now() + 5200;
-        let lastMicNudge = 0;
         while (Date.now() < deadline) {
-          await sleep(100);
+          await sleep(35);
           activationStatus = await query("voiceStatus", {}, 650);
-          let liveTrack = Array.from(activationStatus?.audioTracks || []).some(
-            track => track?.kind === "audio" && track?.readyState === "live" && track?.enabled !== false
-          );
-          if (activationStatus?.active && activationStatus?.micMuted && Date.now() - lastMicNudge > 700) {
-            lastMicNudge = Date.now();
-            const nudged = await query("ensureMicrophoneOn", {}, 1200);
-            if (nudged?.ok) activationStatus = nudged;
-            liveTrack = Array.from(activationStatus?.audioTracks || []).some(
-              track => track?.kind === "audio" && track?.readyState === "live" && track?.enabled !== false
-            );
-          }
-          if (activationStatus?.active && !activationStatus?.micMuted && liveTrack) break;
+          if (activationStatus?.active) break;
         }
         if (previousWindow && previousWindow !== win) restoreBrowserFocus(previousWindow);
         const micLive = Array.from(activationStatus?.audioTracks || []).some(
@@ -797,8 +785,8 @@
         result = {
           ...activation,
           ...activationStatus,
-          ok: Boolean(activationStatus?.ok && activationStatus?.active && !activationStatus?.micMuted && micLive),
-          result: activationStatus?.active && micLive ? "voice-live" : String(activationStatus?.result || activation?.result || "voice-start-timeout"),
+          ok: Boolean(activationStatus?.ok && activationStatus?.active),
+          result: activationStatus?.active ? "voice-active" : String(activationStatus?.result || activation?.result || "voice-start-timeout"),
           focusResult,
           activationStatus,
           micLive,

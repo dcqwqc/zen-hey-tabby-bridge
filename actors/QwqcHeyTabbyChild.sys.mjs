@@ -515,8 +515,12 @@ export class QwqcHeyTabbyChild extends JSWindowActorChild {
     const state = this.state();
     if (!state.active) return { ok: true, result: "already-inactive", ...this.publicState(state) };
     if (state.activeControl) this.trustedClick(state.activeControl);
-    await new Promise(resolve => this.contentWindow.setTimeout(resolve, 350));
-    const after = this.state();
+    const deadline = Date.now() + 1200;
+    let after = this.state();
+    while (after.active && Date.now() < deadline) {
+      await new Promise(resolve => this.contentWindow.setTimeout(resolve, 20));
+      after = this.state();
+    }
     return { ok: !after.active, result: after.active ? "end-click-failed" : "ended", ...this.publicState(after) };
   }
 
