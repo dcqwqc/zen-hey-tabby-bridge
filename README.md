@@ -1,11 +1,7 @@
-# QWQC Hey Tabby Voice Bridge — archived
+# Loom Voice Bridge  archived
 
-This repository has been merged into **CaelestiaPlugin-Tabby** and is no longer maintained independently.
+This historical Zen/Sine integration is now bundled with the [Loom Caelestia companion](https://github.com/dcqwqc/CaelestiaPlugin-Loom).
 
-Current source and deployment logic now live at:
+**Active assistant name:** Loom. **Wake phrase:** Hey Loom. The canonical plugin implements Loom Voice and the Loom MCP integration.
 
-`https://github.com/dcqwqc/CaelestiaPlugin-Tabby/tree/main/bridge/zen`
-
-Tabby owns the matching browser bridge version and automatically deploys it into the active Zen/Sine profile when the bundled files change. Keeping the bridge in the plugin prevents mismatched Tabby/backend and Zen bridge versions.
-
-The final standalone source here is preserved for history only.
+The legacy standalone bridge files intentionally retain some \`tabby\` actor/IPC identifiers for compatibility with already-installed Zen profiles. This repository is archived; make ongoing changes in the main Loom plugin.

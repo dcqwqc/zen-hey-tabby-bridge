@@ -1,8 +1,8 @@
 {
   "id": "qwqc-hey-tabby-bridge",
-  "name": "QWQC Hey Tabby Voice Bridge",
-  "description": "Hidden native Zen window bridge for Tabby with real ChatGPT Voice and WebRTC microphone capture.",
-  "homepage": "https://github.com/dcqwqc/zen-hey-tabby-bridge",
+  "name": "QWQC Hey Loom Voice Bridge",
+  "description": "Archived Zen Voice bridge, now bundled with the Loom desktop companion.",
+  "homepage": "https://github.com/dcqwqc/zen-loom-bridge",
   "scripts": {
     "hey-tabby.uc.js": {
       "include": [

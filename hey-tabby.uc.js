@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name QWQC Tabby Voice Engine Bridge
-// @description Dedicated standalone ChatGPT Voice engine window for Tabby.
+// @name QWQC Loom Voice Engine Bridge
+// @description Historical Loom companion bridge (legacy Tabby IPC identifiers preserved).
 // @author qwqc
 // ==/UserScript==
 
